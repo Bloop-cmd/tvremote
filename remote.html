@@ -58,7 +58,8 @@ function pair(code){
       $('pair').style.display='none';$('main').style.display='block';$('q').focus();
     });
     conn.on('data',m=>{
-      if(m.type==='error'){$('status').textContent='⚠ '+m.msg}
+      if(m.type==='error'){$('status').textContent='⚠ TV: '+m.msg}
+      else if(m.type==='info'){$('status').textContent='📺 '+m.msg}
     });
     conn.on('close',()=>{$('status').textContent='⚠ TV disconnected — reconnecting…';setTimeout(()=>{if(!conn||!conn.open)pair(code)},3000)});
   });
@@ -69,6 +70,22 @@ $('connect').onclick=()=>pair($('codein').value);
 $('codein').onkeydown=e=>{if(e.key==='Enter')pair($('codein').value)};
 $('unpair').onclick=()=>{localStorage.removeItem('pairCode');try{conn&&conn.close()}catch{}};
 document.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>send({type:'control',action:b.dataset.a}));
+
+
+// Resolve a playable MP4 on the phone (it can reach archive.org), then tell the TV the exact file
+async function playItem(m){
+  $('status').textContent='⏳ Loading '+m.title+'…';
+  try{
+    const meta=await (await fetch('https://archive.org/metadata/'+encodeURIComponent(m.id))).json();
+    const mp4=(meta.files||[]).filter(f=>/\.mp4$/i.test(f.name)&&!/_thumb|sample/i.test(f.name));
+    const by=re=>mp4.find(f=>re.test(f.format||''));
+    const pick=by(/h\.?264/i)||by(/mpeg-?4/i)||[...mp4].sort((a,b)=>(+a.size||0)-(+b.size||0)).find(f=>(+f.size||0)>2e7)||mp4[0];
+    if(!pick){$('status').textContent='⚠ No MP4 version of “'+m.title+'”. Try another title.';return}
+    const url='https://archive.org/download/'+encodeURIComponent(m.id)+'/'+pick.name.split('/').map(encodeURIComponent).join('/');
+    send({type:'playUrl',url,title:m.title});
+    $('status').textContent='▶ '+m.title+'  ['+pick.name+']';
+  }catch(e){$('status').textContent='⚠ Could not load details: '+e.message}
+}
 
 // Search public-domain films on the Internet Archive
 async function search(q,genre){
@@ -93,7 +110,7 @@ async function search(q,genre){
     if(m.year){const sm=document.createElement('small');sm.textContent=' '+m.year;s.appendChild(sm)}
     const b=document.createElement('b');b.textContent='▶';
     li.append(s,b);
-    li.onclick=()=>{send({type:'playId',id:m.id});$('status').textContent='▶ '+m.title};
+    li.onclick=()=>playItem(m);
     ul.appendChild(li);
   });
   return items;
@@ -134,12 +151,13 @@ function openApp(key){
 async function genreResults(g,playOne){
   $('q').value='';
   const items=await search('',g);
-  if(playOne&&items.length){const pick=items[Math.floor(Math.random()*Math.min(items.length,10))];send({type:'playId',id:pick.id});$('status').textContent='▶ '+pick.title}
+  if(playOne&&items.length){const pick=items[Math.floor(Math.random()*Math.min(items.length,10))];playItem(pick)}
 }
 (function buildChips(){
   const c=$('chips');
   ['horror','comedy','sci-fi','thriller','drama','western','animation'].forEach(g=>{
     const b=document.createElement('button');b.textContent=g[0].toUpperCase()+g.slice(1);b.onclick=()=>genreResults(g,false);c.appendChild(b)});
+  {const b=document.createElement('button');b.textContent='🧪 Test video';b.onclick=()=>{send({type:'playUrl',url:'https://www.w3schools.com/html/mov_bbb.mp4',title:'Test clip'});$('status').textContent='🧪 Sent test clip to TV'};c.appendChild(b)}
   Object.keys(APPS).forEach(k=>{const b=document.createElement('button');b.className='app';b.textContent='📺 '+APPS[k].name;b.onclick=()=>openApp(k);c.appendChild(b)});
 })();
 
@@ -158,7 +176,7 @@ function secondsFrom(t,def){
 async function playByName(name){
   $('q').value=name;
   const items=await search(name);
-  if(items.length){send({type:'playId',id:items[0].id});$('status').textContent='▶ '+items[0].title}
+  if(items.length){playItem(items[0])}
   else $('status').textContent='No movie found for “'+name+'”';
 }
 async function runCommand(raw,needWake){

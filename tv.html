@@ -19,6 +19,7 @@ video{width:100%;height:100%}
   <div style="font-size:3vw">📺 On your phone open this site → “I'm on the phone”, then enter:</div>
   <div id="code">······</div>
   <div id="msg">Starting…</div>
+  <button id="go" class="primary" style="display:none;margin-top:3vw;font-size:3vw;padding:1.2vw 5vw">OK – start</button>
 </div>
 <div id="home"><div id="q"></div><div id="grid"></div></div>
 <div id="player"><video id="v" controls autoplay></video></div>
@@ -31,7 +32,8 @@ const PREFIX='fireTvRemote-';
 function makeCode(){let c='';for(let i=0;i<6;i++)c+=ALPHA[Math.floor(Math.random()*ALPHA.length)];return c}
 function toast(t){const e=$('toast');e.textContent=t;e.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display='none',2000)}
 
-let conn=null;
+let conn=null,gesture=false;
+$('go').onclick=()=>{gesture=true;$('pair').style.display='none';try{document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen().catch(()=>{})}catch{}};
 function reply(o){try{conn&&conn.open&&conn.send(o)}catch{}}
 
 function start(){
@@ -47,7 +49,11 @@ function start(){
   peer.on('disconnected',()=>{try{peer.reconnect()}catch{}});
   peer.on('connection',c=>{
     conn=c;
-    c.on('open',()=>{$('pair').style.display='none';toast('📱 Phone connected');c.send({type:'ready'})});
+    c.on('open',()=>{
+      toast('📱 Phone connected');c.send({type:'ready'});
+      if(!gesture){$('msg').textContent='📱 Phone connected! Press OK on your TV remote to start.';$('go').style.display='inline-block';$('go').focus()}
+      else $('pair').style.display='none';
+    });
     c.on('data',handle);
     c.on('close',()=>{toast('Phone disconnected')});
   });
@@ -77,13 +83,27 @@ async function playId(id){
     playUrl('https://archive.org/download/'+encodeURIComponent(id)+'/'+pick.name.split('/').map(encodeURIComponent).join('/'));
   }catch(e){toast('Could not load video');reply({type:'error',msg:'Could not load video'})}
 }
-function playUrl(u){$('player').style.display='block';v.src=u;v.play().catch(()=>{})}
+function playUrl(u,title){
+  $('player').style.display='block';v.src=u;v.muted=false;
+  toast('▶ '+(title||'Loading…'));
+  const p=v.play();
+  if(p&&p.catch)p.catch(()=>{v.muted=true;v.play().then(()=>toast('Playing muted — press OK on the video to unmute')).catch(()=>toast('Press OK to start playback'))});
+}
 function stop(){v.pause();v.removeAttribute('src');v.load();$('player').style.display='none'}
 
+function setVol(d){
+  const before=v.volume, t=Math.max(0,Math.min(1,Math.round((before+d)*10)/10));
+  v.muted=false; v.volume=t;
+  setTimeout(()=>{
+    if(Math.abs(v.volume-t)>0.01) toast('This TV browser can’t change volume — use the Fire TV remote');
+    else if(t===before) toast(t>=1?'Player volume is at max — raise the TV volume with the Fire TV remote':'Volume at minimum');
+    else toast('Volume '+Math.round(v.volume*100)+'%');
+  },60);
+}
 function handle(m){
   if(m.type==='results') showResults(m.items||[],m.q||'');
   else if(m.type==='playId') playId(m.id);
-  else if(m.type==='playUrl') playUrl(m.url);
+  else if(m.type==='playUrl') playUrl(m.url,m.title);
   else if(m.type==='say') toast('🎤 '+m.text);
   else if(m.type==='openApp'){toast('Opening '+m.name+'… press Back to return here');setTimeout(()=>{location.href=m.url},1800)}
   else if(m.type==='control'){
@@ -95,13 +115,21 @@ function handle(m){
       case 'seek':v.currentTime=Math.max(0,v.currentTime+(+m.seconds||0));toast((m.seconds>0?'⏩ +':'⏪ ')+m.seconds+'s');break;
       case 'back10':v.currentTime=Math.max(0,v.currentTime-10);toast('⏪ 10s');break;
       case 'fwd10':v.currentTime+=10;toast('10s ⏩');break;
-      case 'volup':v.volume=Math.min(1,v.volume+.1);toast('Volume '+Math.round(v.volume*100));break;
-      case 'voldown':v.volume=Math.max(0,v.volume-.1);toast('Volume '+Math.round(v.volume*100));break;
+      case 'volup':setVol(.1);break;
+      case 'voldown':setVol(-.1);break;
       case 'fullscreen':document.documentElement.requestFullscreen?.();break;
       case 'stop':stop();break;
     }
   }
 }
 v.onended=stop;
-v.onerror=()=>{toast('Cannot play this video');reply({type:'error',msg:'TV could not play it'})};
+v.onerror=()=>{
+  if(!v.getAttribute('src'))return;
+  const c=v.error?v.error.code:0;
+  const why={1:'aborted',2:'network error (could not download)',3:'could not decode this video',4:'video format or address not supported'}[c]||'unknown error';
+  toast('Cannot play: '+why);reply({type:'error',msg:why+' (code '+c+')'});
+};
+v.onplaying=()=>reply({type:'info',msg:'Playing on TV'});
+v.onwaiting=()=>toast('Buffering…');
+v.onclick=()=>{v.muted=false;v.paused?v.play():v.pause()};
 </script></body></html>
