@@ -1,0 +1,107 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TV</title><link rel="stylesheet" href="style.css">
+<style>
+body{overflow:hidden}
+#pair{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;z-index:5;background:#0b0b10}
+#code{font-size:9vw;letter-spacing:1.5vw;color:#7c8cff;font-weight:700;margin:2vw 0}
+#msg{font-size:2.2vw;opacity:.8}
+#home{padding:3vw;height:100vh;overflow:auto}
+#q{font-size:3.5vw;margin-bottom:2vw}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(18vw,1fr));gap:2vw}
+.card{background:#1c1c2b;border-radius:1vw;overflow:hidden;font-size:1.5vw}
+.card img{width:100%;aspect-ratio:3/4;object-fit:cover;background:#2b2b44;display:block}
+.card div{padding:.8vw 1vw}
+#player{position:fixed;inset:0;background:#000;display:none;z-index:4}
+video{width:100%;height:100%}
+#toast{position:fixed;top:2vw;right:2vw;background:#000c;padding:1vw 2vw;border-radius:1vw;font-size:2vw;display:none;z-index:9}
+</style></head><body>
+<div id="pair">
+  <div style="font-size:3vw">📺 On your phone open this site → “I'm on the phone”, then enter:</div>
+  <div id="code">······</div>
+  <div id="msg">Starting…</div>
+</div>
+<div id="home"><div id="q"></div><div id="grid"></div></div>
+<div id="player"><video id="v" controls autoplay></video></div>
+<div id="toast"></div>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $=id=>document.getElementById(id), v=$('v');
+const ALPHA='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PREFIX='fireTvRemote-';
+function makeCode(){let c='';for(let i=0;i<6;i++)c+=ALPHA[Math.floor(Math.random()*ALPHA.length)];return c}
+function toast(t){const e=$('toast');e.textContent=t;e.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display='none',2000)}
+
+let conn=null;
+function reply(o){try{conn&&conn.open&&conn.send(o)}catch{}}
+
+function start(){
+  if(typeof Peer==='undefined'){$('msg').textContent='Could not load connection library. Check TV internet.';return}
+  let code=localStorage.getItem('tvcode')||makeCode();
+  const peer=new Peer(PREFIX+code);
+  peer.on('open',()=>{localStorage.setItem('tvcode',code);$('code').textContent=code;$('msg').textContent='Waiting for phone…'});
+  peer.on('error',e=>{
+    if(e.type==='unavailable-id'){localStorage.removeItem('tvcode');peer.destroy();setTimeout(start,300)}
+    else $('msg').textContent='Connection problem: '+e.type+' (retrying)';
+    if(e.type!=='unavailable-id')setTimeout(()=>{try{peer.destroy()}catch{};start()},4000);
+  });
+  peer.on('disconnected',()=>{try{peer.reconnect()}catch{}});
+  peer.on('connection',c=>{
+    conn=c;
+    c.on('open',()=>{$('pair').style.display='none';toast('📱 Phone connected');c.send({type:'ready'})});
+    c.on('data',handle);
+    c.on('close',()=>{toast('Phone disconnected')});
+  });
+}
+start();
+
+function showResults(items,q){
+  $('q').textContent=q?('Results for “'+q+'”'):'';
+  const g=$('grid');g.innerHTML='';
+  if(!items.length){$('q').textContent='No results for “'+q+'”';return}
+  items.forEach(m=>{
+    const d=document.createElement('div');d.className='card';
+    const i=document.createElement('img');i.src='https://archive.org/services/img/'+encodeURIComponent(m.id);i.alt='';
+    const t=document.createElement('div');t.textContent=m.title+(m.year?' ('+m.year+')':'');
+    d.append(i,t);g.appendChild(d);
+  });
+}
+
+async function playId(id){
+  toast('Loading…');
+  try{
+    const meta=await (await fetch('https://archive.org/metadata/'+encodeURIComponent(id))).json();
+    const files=(meta.files||[]).filter(f=>/\.mp4$/i.test(f.name));
+    files.sort((a,b)=>(+b.size||0)-(+a.size||0));
+    const pick=files.find(f=>/h\.?264|mpeg4/i.test(f.format||''))||files[0];
+    if(!pick){toast('No MP4 found for this title');reply({type:'error',msg:'No MP4 for this title'});return}
+    playUrl('https://archive.org/download/'+encodeURIComponent(id)+'/'+pick.name.split('/').map(encodeURIComponent).join('/'));
+  }catch(e){toast('Could not load video');reply({type:'error',msg:'Could not load video'})}
+}
+function playUrl(u){$('player').style.display='block';v.src=u;v.play().catch(()=>{})}
+function stop(){v.pause();v.removeAttribute('src');v.load();$('player').style.display='none'}
+
+function handle(m){
+  if(m.type==='results') showResults(m.items||[],m.q||'');
+  else if(m.type==='playId') playId(m.id);
+  else if(m.type==='playUrl') playUrl(m.url);
+  else if(m.type==='say') toast('🎤 '+m.text);
+  else if(m.type==='openApp'){toast('Opening '+m.name+'… press Back to return here');setTimeout(()=>{location.href=m.url},1800)}
+  else if(m.type==='control'){
+    switch(m.action){
+      case 'toggle':v.paused?v.play():v.pause();break;
+      case 'pause':v.pause();toast('⏸ Paused');break;
+      case 'play':v.play().catch(()=>{});toast('▶ Playing');break;
+      case 'mute':v.muted=!v.muted;toast(v.muted?'🔇 Muted':'🔊 Unmuted');break;
+      case 'seek':v.currentTime=Math.max(0,v.currentTime+(+m.seconds||0));toast((m.seconds>0?'⏩ +':'⏪ ')+m.seconds+'s');break;
+      case 'back10':v.currentTime=Math.max(0,v.currentTime-10);toast('⏪ 10s');break;
+      case 'fwd10':v.currentTime+=10;toast('10s ⏩');break;
+      case 'volup':v.volume=Math.min(1,v.volume+.1);toast('Volume '+Math.round(v.volume*100));break;
+      case 'voldown':v.volume=Math.max(0,v.volume-.1);toast('Volume '+Math.round(v.volume*100));break;
+      case 'fullscreen':document.documentElement.requestFullscreen?.();break;
+      case 'stop':stop();break;
+    }
+  }
+}
+v.onended=stop;
+v.onerror=()=>{toast('Cannot play this video');reply({type:'error',msg:'TV could not play it'})};
+</script></body></html>

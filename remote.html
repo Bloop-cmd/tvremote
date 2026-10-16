@@ -1,0 +1,211 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Remote</title><link rel="stylesheet" href="style.css">
+<style>
+#pair{padding:30px 20px;text-align:center}
+#codein{font-size:32px;letter-spacing:6px;text-transform:uppercase;text-align:center;width:100%;max-width:300px;padding:12px;border-radius:12px;border:0;background:#1c1c2b;color:#fff}
+#pstatus{margin-top:14px;opacity:.8;min-height:22px}
+#main{display:none}
+header{position:sticky;top:0;background:#0b0b10;padding:12px;border-bottom:1px solid #222;z-index:2}
+#q{font-size:18px;padding:12px 14px;border-radius:12px;border:0;background:#1c1c2b;color:#fff}
+#status{font-size:12px;opacity:.6;margin:6px 2px 0}
+ul{list-style:none;margin:0;padding:8px 12px 150px}
+li{background:#1c1c2b;border-radius:12px;padding:16px;margin:8px 0;font-size:17px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+li:active{background:#2b2b44}li b{color:#7c8cff;font-size:20px}li small{opacity:.6}
+nav{position:fixed;bottom:0;left:0;right:0;background:#14141f;padding:10px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;border-top:1px solid #222}
+button.on{background:#e5484d!important;animation:p 1s infinite}@keyframes p{50%{opacity:.6}}
+#chips{display:flex;gap:8px;overflow-x:auto;padding:10px 12px 0;white-space:nowrap}#chips button{padding:8px 14px;font-size:15px;flex:none}#chips button.app{background:#3b2b44}
+</style></head><body>
+<div id="pair">
+  <h2>Enter the code shown on your TV</h2>
+  <input id="codein" maxlength="6" autocomplete="off" autocapitalize="characters" placeholder="ABC123">
+  <div style="margin-top:16px"><button class="primary" id="connect">Connect</button></div>
+  <div id="pstatus"></div>
+</div>
+<div id="main">
+  <header>
+    <div style="display:flex;gap:8px"><input id="q" placeholder="Type, or tap 🎤 and speak…" autocomplete="off" style="flex:1;min-width:0"><button id="mic" title="Speak a command">🎤</button><button id="ear" title="Always listening: say 'TV, play …'">👂</button></div>
+    <div id="status">Connected ✓</div><div id="heard" style="font-size:13px;color:#7c8cff;min-height:18px;margin:2px"></div>
+  </header>
+  <div id="chips"></div>
+  <ul id="list"></ul>
+  <nav>
+    <button data-a="back10">⏪10</button><button data-a="toggle">⏯</button><button data-a="fwd10">10⏩</button><button data-a="stop">⏹</button>
+    <button data-a="voldown">🔉</button><button data-a="volup">🔊</button><button data-a="fullscreen">⛶</button><button id="unpair">❌</button>
+  </nav>
+</div>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const PREFIX='fireTvRemote-';
+let peer=null,conn=null;
+
+function pair(code){
+  code=code.trim().toUpperCase();
+  if(code.length!==6){$('pstatus').textContent='Code must be 6 characters';return}
+  if(typeof Peer==='undefined'){$('pstatus').textContent='Could not load connection library (check internet)';return}
+  $('pstatus').textContent='Connecting…';
+  try{peer&&peer.destroy()}catch{}
+  peer=new Peer();
+  let done=false;
+  const fail=m=>{if(done)return;done=true;$('pstatus').textContent=m;try{peer.destroy()}catch{}};
+  const timer=setTimeout(()=>fail('Could not reach the TV. Check the code and that the TV page is open.'),12000);
+  peer.on('error',e=>{clearTimeout(timer);fail(e.type==='peer-unavailable'?'No TV with that code. Check the code on the TV.':'Connection problem: '+e.type)});
+  peer.on('open',()=>{
+    conn=peer.connect(PREFIX+code,{reliable:true});
+    conn.on('open',()=>{
+      clearTimeout(timer);done=true;
+      localStorage.setItem('pairCode',code);
+      $('pair').style.display='none';$('main').style.display='block';$('q').focus();
+    });
+    conn.on('data',m=>{
+      if(m.type==='error'){$('status').textContent='⚠ '+m.msg}
+    });
+    conn.on('close',()=>{$('status').textContent='⚠ TV disconnected — reconnecting…';setTimeout(()=>{if(!conn||!conn.open)pair(code)},3000)});
+  });
+}
+const send=o=>{try{conn&&conn.open?conn.send(o):($('status').textContent='⚠ Not connected')}catch{}};
+
+$('connect').onclick=()=>pair($('codein').value);
+$('codein').onkeydown=e=>{if(e.key==='Enter')pair($('codein').value)};
+$('unpair').onclick=()=>{localStorage.removeItem('pairCode');try{conn&&conn.close()}catch{}};
+document.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>send({type:'control',action:b.dataset.a}));
+
+// Search public-domain films on the Internet Archive
+async function search(q,genre){
+  $('list').innerHTML='<li>Searching…</li>';
+  const params=new URLSearchParams({
+    q:(genre?`subject:(${genre}) AND mediatype:movies AND collection:feature_films`:`title:(${q.replace(/["()]/g,' ')}) AND mediatype:movies AND collection:feature_films`),
+    rows:'20',output:'json',sort:'downloads desc'
+  });
+  ['identifier','title','year'].forEach(f=>params.append('fl[]',f));
+  let docs=[];
+  try{
+    const r=await (await fetch('https://archive.org/advancedsearch.php?'+params)).json();
+    docs=(r.response&&r.response.docs)||[];
+  }catch{$('list').innerHTML='<li>Search failed. Check internet.</li>';return []}
+  const items=docs.map(d=>({id:d.identifier,title:(Array.isArray(d.title)?d.title[0]:d.title)||String(d.identifier).replace(/\.(avi|mp4|mkv)$/i,'').replace(/[_-]+/g,' '),year:d.year}));
+  send({type:'results',items,q:genre?genre+' movies':q});
+  const ul=$('list');ul.innerHTML='';
+  if(!items.length){ul.innerHTML='<li>No matches</li>';return items}
+  items.forEach(m=>{
+    const li=document.createElement('li');
+    const s=document.createElement('span');s.textContent=m.title;
+    if(m.year){const sm=document.createElement('small');sm.textContent=' '+m.year;s.appendChild(sm)}
+    const b=document.createElement('b');b.textContent='▶';
+    li.append(s,b);
+    li.onclick=()=>{send({type:'playId',id:m.id});$('status').textContent='▶ '+m.title};
+    ul.appendChild(li);
+  });
+  return items;
+}
+let t;
+$('q').oninput=e=>{clearTimeout(t);const q=e.target.value.trim();if(!q){$('list').innerHTML='';return}t=setTimeout(()=>search(q),400)};
+
+
+
+// ---------------- Genres & streaming apps ----------------
+const GENRES={horror:'horror',comedy:'comedy','sci fi':'sci-fi','sci-fi':'sci-fi','science fiction':'sci-fi',thriller:'thriller',drama:'drama',western:'western',romance:'romance',animation:'animation',cartoon:'animation',mystery:'mystery',crime:'crime',war:'war',documentary:'documentary',adventure:'adventure',fantasy:'fantasy',action:'action'};
+const GENRE_RE='('+Object.keys(GENRES).join('|')+')';
+const APPS={
+  netflix:{name:'Netflix',url:'https://www.netflix.com'},
+  prime:{name:'Prime Video',url:'https://www.primevideo.com'},
+  hotstar:{name:'JioHotstar',url:'https://www.hotstar.com'},
+  youtube:{name:'YouTube',url:'https://www.youtube.com/tv'},
+  vi:{name:'Vi Movies & TV',url:null}
+};
+function appFrom(t){
+  t=t.trim();
+  if(/^netflix$/.test(t))return 'netflix';
+  if(/^(amazon )?prime( video)?$/.test(t))return 'prime';
+  if(/^(jio ?)?(hotstar|star)$/.test(t))return 'hotstar';
+  if(/^you ?tube$/.test(t))return 'youtube';
+  if(/^(vi|v i|vee eye)( movies?( and| &)? (tv|t v))?$/.test(t))return 'vi';
+  return null;
+}
+function openApp(key){
+  const a=APPS[key];
+  if(!a.url){
+    $('heard').textContent='Vi Movies & TV is an app only. Open it from the Fire TV home screen (or say “Alexa, open Vi Movies & TV”).';
+    send({type:'say',text:'Vi Movies & TV: open from Fire TV home'});return;
+  }
+  $('status').textContent='Opening '+a.name+' on the TV…';
+  send({type:'openApp',name:a.name,url:a.url});
+}
+async function genreResults(g,playOne){
+  $('q').value='';
+  const items=await search('',g);
+  if(playOne&&items.length){const pick=items[Math.floor(Math.random()*Math.min(items.length,10))];send({type:'playId',id:pick.id});$('status').textContent='▶ '+pick.title}
+}
+(function buildChips(){
+  const c=$('chips');
+  ['horror','comedy','sci-fi','thriller','drama','western','animation'].forEach(g=>{
+    const b=document.createElement('button');b.textContent=g[0].toUpperCase()+g.slice(1);b.onclick=()=>genreResults(g,false);c.appendChild(b)});
+  Object.keys(APPS).forEach(k=>{const b=document.createElement('button');b.className='app';b.textContent='📺 '+APPS[k].name;b.onclick=()=>openApp(k);c.appendChild(b)});
+})();
+
+// ---------------- Voice assistant ----------------
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let rec=null,always=false,recBusy=false;
+const ctl=a=>send({type:'control',action:a});
+const seek=sec=>send({type:'control',action:'seek',seconds:sec});
+function heard(t){$('heard').textContent='🎤 “'+t+'”';send({type:'say',text:t})}
+function secondsFrom(t,def){
+  const m=t.match(/(\d+)\s*(second|sec|minute|min)?/);
+  if(!m)return def;
+  const n=parseInt(m[1],10);
+  return /min/.test(m[2]||'')?n*60:n;
+}
+async function playByName(name){
+  $('q').value=name;
+  const items=await search(name);
+  if(items.length){send({type:'playId',id:items[0].id});$('status').textContent='▶ '+items[0].title}
+  else $('status').textContent='No movie found for “'+name+'”';
+}
+async function runCommand(raw,needWake){
+  let t=raw.toLowerCase().replace(/[.,!?]/g,' ').replace(/\s+/g,' ').trim();
+  const w=t.match(/^(hey |ok |okay )?(tv|t v|tweeting)\b ?/);
+  if(needWake&&!w)return;
+  if(w)t=t.slice(w[0].length).trim();
+  if(!t)return;
+  heard(t);
+  let m;
+  if(/^(stop|exit|close|go home|go back to (the )?(menu|home))\b/.test(t))return ctl('stop');
+  if(/^(pause|hold on|wait)\b/.test(t))return ctl('pause');
+  if(/^(resume|continue|unpause|keep going|play)$/.test(t))return ctl('play');
+  if(/\bmute\b/.test(t))return ctl('mute');
+  if(/(volume up|louder|turn (it )?up|increase volume)/.test(t))return ctl('volup');
+  if(/(volume down|quieter|softer|turn (it )?down|lower (the )?volume|decrease volume)/.test(t))return ctl('voldown');
+  if(/full ?screen/.test(t))return ctl('fullscreen');
+  if(/^(skip|forward|fast forward|go forward|jump ahead)\b/.test(t))return seek(secondsFrom(t,10));
+  if(/^(back|rewind|go back|replay|jump back)\b/.test(t))return seek(-secondsFrom(t,10));
+  if(m=t.match(/^(?:open|launch|start|go to|switch to|put on|show)\s+(?:the )?(.+?)(?: app)?$/)){const k=appFrom(m[1]);if(k)return openApp(k)}
+  {const r=t.replace(/^(?:play|watch)\s+/,'');const k=appFrom(r);if(k)return openApp(k)}
+  if(m=t.match(new RegExp('^(?:play|watch|put on)\\s+(?:me )?(?:a |an |some |any )(?:good |scary |new )?'+GENRE_RE+'(?: movie| film)?$')))return genreResults(GENRES[m[1]],true);
+  if(m=t.match(new RegExp('^(?:(?:show|find|search|get|list)(?: me)?(?: for)? )?(?:some |any |the |best |good |scary )*'+GENRE_RE+'(?: movies?| films?)?$')))return genreResults(GENRES[m[1]],false);
+  if(m=t.match(/^(?:play|watch|put on|start)\s+(?:the movie |the film |movie |film )?(.+)/))return playByName(m[1]);
+  if(m=t.match(/^(?:search(?: for)?|find|look for|show(?: me)?)\s+(.+)/)){$('q').value=m[1];return search(m[1])}
+  $('q').value=t;return search(t); // anything else = search
+}
+function startRec(continuous){
+  if(!SR){$('heard').textContent='Voice needs Chrome on Android (or another browser with speech support).';return}
+  stopRec();
+  rec=new SR();
+  rec.lang=navigator.language||'en-US';
+  rec.continuous=continuous;rec.interimResults=false;
+  rec.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)runCommand(e.results[i][0].transcript,continuous)};
+  rec.onerror=e=>{
+    if(e.error==='not-allowed'||e.error==='service-not-allowed'){always=false;$('ear').classList.remove('on');$('heard').textContent='Microphone blocked. Allow mic access for this site in Chrome settings.'}
+  };
+  rec.onend=()=>{
+    $('mic').classList.remove('on');
+    if(always){try{rec.start()}catch{setTimeout(()=>{try{rec.start()}catch{}},500)}}else{$('ear').classList.remove('on')}
+  };
+  try{rec.start();(continuous?$('ear'):$('mic')).classList.add('on');$('heard').textContent=continuous?'👂 Listening… say “TV, play …”':'🎤 Listening…'}catch{}
+}
+function stopRec(){always=false;if(rec){rec.onend=null;try{rec.abort()}catch{}rec=null}$('mic').classList.remove('on');$('ear').classList.remove('on')}
+$('mic').onclick=()=>{if($('mic').classList.contains('on')){stopRec();return}always=false;startRec(false)};
+$('ear').onclick=()=>{if(always){stopRec();$('heard').textContent='Stopped listening';return}always=true;startRec(true)};
+
+const saved=localStorage.getItem('pairCode');
+if(saved){$('codein').value=saved;pair(saved)}
+</script></body></html>
